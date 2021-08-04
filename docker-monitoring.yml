@@ -6,9 +6,12 @@ volumes:
 
 networks:
   monitor-net:
+    driver: overlay
+    name: inbound
+  traefik-public:
+    external: true
 
 services:
-
   prometheus:
     image: prom/prometheus
     volumes:
@@ -19,19 +22,19 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--web.enable-admin-api'
-    ports:
-      - 9090:9090
-    depends_on:
-      - cadvisor
-#      - pushgateway
     networks:
       - monitor-net
+      - traefik-public
     deploy:
       placement:
         constraints:
           - node.role==manager
+      labels:
+       - traefik.enable=true
+        - traefik.http.services.prometheus.loadbalancer.server.port=9090
+        - traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN}`)
+        - traefik.http.routers.prometheus.entrypoints=http,https
+        - traefik.http.routers.prometheus.middlewares=redirect@file,auth@file
       restart_policy:
         condition: on-failure
 
@@ -53,7 +56,7 @@ services:
     deploy:
       mode: global
       restart_policy:
-          condition: on-failure
+        condition: on-failure
 
   alertmanager:
     image: prom/alertmanager
@@ -63,15 +66,28 @@ services:
       - "./alertmanager/:/etc/alertmanager/"
     networks:
       - monitor-net
+      - traefik-public
     command:
       - '--config.file=/etc/alertmanager/config.yml'
       - '--storage.path=/alertmanager'
     deploy:
+      mode: replicated
+      replicas: 1
       placement:
         constraints:
-           - node.role==manager
+          - node.role == manager
+      resources:
+        limits:
+          memory: 128M
       restart_policy:
-        condition: on-failure    
+        condition: on-failure
+    labels:
+        - traefik.enable=true
+        - traefik.http.services.alertmanager.loadbalancer.server.port=9093
+        - traefik.http.routers.alertmanager.rule=Host(`alertmanager.${DOMAIN}`)
+        - traefik.http.routers.alertmanager.entrypoints=http,https
+        - traefik.http.routers.alertmanager.middlewares=redirect@file,auth@file
+        - traefik.frontend.rule=Host:alertmanager.${DOMAIN}
 
   cadvisor:
     image: google/cadvisor
@@ -81,42 +97,35 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     ports:
-      - 8080:8080
+      - 8088:8080
     networks:
       - monitor-net
     deploy:
       mode: global
       restart_policy:
-          condition: on-failure
+        condition: on-failure
 
   grafana:
     image: grafana/grafana
     depends_on:
       - prometheus
-    ports:
-      - 3000:3000
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning/:/etc/grafana/provisioning/
-    env_file:
-      - ./grafana/config.monitoring
     networks:
       - monitor-net
+      - traefik-public
     user: "472"
     deploy:
       placement:
         constraints:
           - node.role==manager
+      labels:
+        - traefik.enable=true
+        - traefik.http.services.grafana.loadbalancer.server.port=3000
+        # ${TODO: DOMAIN cannot be read after reboot}
+        - traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)
+        - traefik.http.routers.grafana.entrypoints=http,https
+        - traefik.http.routers.grafana.service=grafana
       restart_policy:
         condition: on-failure
-
-#  pushgateway:
-#    image: prom/pushgateway
-#    deploy:
-#      mode: global
-#      restart_policy:
-#        condition: on-failure
-#    ports:
-#      - 9091:9091
-#    networks:
-#      - monitor-net
